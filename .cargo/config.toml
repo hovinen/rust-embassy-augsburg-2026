@@ -1,0 +1,19 @@
+# No default build target: `cargo test` runs the unit tests on the host.
+# Build/flash the firmware with `cargo b` / `cargo r`.
+[alias]
+b = "build --target thumbv6m-none-eabi --features firmware"
+r = "run --target thumbv6m-none-eabi --features firmware"
+
+[target.thumbv6m-none-eabi]
+runner = "probe-rs run --chip RP2040"
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+# Flashes over a debug probe and prints the `defmt` logs.
+runner = "probe-rs run --chip RP2040"
+# Flashes over USB in BOOTSEL mode. Logs are not available.
+# runner = "picotool load --update --verify --execute -t elf"
+
+[env]
+DEFMT_LOG = "debug"
+# Wi-Fi credentials for the firmware (compile-time `env!` in src/main.rs);
+# alternatively set them in the shell: WIFI_SSID=... WIFI_PASSWORD=... cargo r --release

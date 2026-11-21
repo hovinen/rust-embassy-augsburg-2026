@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico W — Temperature &amp; Humidity</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem; max-width: 860px; margin-inline: auto;
+    font: 15px/1.4 system-ui, sans-serif; background: #101418; color: #d7dde3;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  .bar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  input {
+    flex: 1; min-width: 220px; padding: .4rem .6rem; border-radius: 6px;
+    border: 1px solid #39424c; background: #171d23; color: inherit;
+  }
+  #status { font-size: .85rem; color: #8b96a1; }
+  #status.ok { color: #4caf7d; }
+  #status.err { color: #e06c60; }
+  .card {
+    background: #171d23; border: 1px solid #262f38; border-radius: 10px;
+    padding: 1rem; margin-bottom: 1rem;
+  }
+  .card h2 { margin: 0; font-size: 1rem; font-weight: 600; display: flex; justify-content: space-between; }
+  .value { font-variant-numeric: tabular-nums; color: #9ecbff; }
+  canvas { width: 100%; height: 220px; display: block; margin-top: .5rem; }
+</style>
+</head>
+<body>
+<h1>Pico W sensor dashboard</h1>
+<div class="bar">
+  <input id="url" value="http://10.10.2.165/" spellcheck="false">
+  <span id="status">connecting…</span>
+</div>
+
+<div class="card">
+  <h2>Temperature <span class="value" id="temp-value">—</span></h2>
+  <canvas id="temp-graph" width="800" height="220"></canvas>
+</div>
+<div class="card">
+  <h2>Humidity <span class="value" id="hum-value">—</span></h2>
+  <canvas id="hum-graph" width="800" height="220"></canvas>
+</div>
+
+<script>
+"use strict";
+const MAX_POINTS = 60;      // samples kept on screen
+const POLL_MS = 2000;       // device samples every ~2 s
+const urlInput = document.getElementById("url");
+// When served by the Pico itself (http://<pico-ip>/), poll same-origin /data;
+// from a file:// page, use the absolute device URL from the input.
+if (location.protocol !== "file:") urlInput.value = "/data";
+const statusEl = document.getElementById("status");
+
+const series = { temp: [], hum: [] };
+
+function drawGraph(canvas, data, { unit, color, minPad = 1 }) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const padL = 44, padR = 10, padT = 10, padB = 20;
+  ctx.clearRect(0, 0, W, H);
+
+  if (data.length < 2) {
+    ctx.fillStyle = "#5b6672";
+    ctx.font = "13px system-ui";
+    ctx.fillText("waiting for data…", padL + 10, H / 2);
+    return;
+  }
+
+  let min = Math.min(...data), max = Math.max(...data);
+  if (max - min < minPad) { const m = (max + min) / 2; min = m - minPad / 2; max = m + minPad / 2; }
+
+  const x = i => padL + (W - padL - padR) * i / (MAX_POINTS - 1);
+  const y = v => padT + (H - padT - padB) * (1 - (v - min) / (max - min));
+
+  // grid + y labels
+  ctx.strokeStyle = "#262f38";
+  ctx.fillStyle = "#8b96a1";
+  ctx.font = "11px system-ui";
+  ctx.textAlign = "right";
+  for (let g = 0; g <= 4; g++) {
+    const v = min + (max - min) * g / 4;
+    const gy = y(v);
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(W - padR, gy); ctx.stroke();
+    ctx.fillText(v.toFixed(1) + unit, padL - 6, gy + 4);
+  }
+  // x labels: sample count
+  ctx.textAlign = "center";
+  ctx.fillText("-" + data.length + " samples", padL, H - 6);
+  ctx.fillText("now", W - padR, H - 6);
+
+  // line
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const off = MAX_POINTS - data.length;   // right-align the series
+  data.forEach((v, i) => {
+    const px = x(off + i), py = y(v);
+    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  // last point marker
+  const lx = x(off + data.length - 1), ly = y(data[data.length - 1]);
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, 2 * Math.PI); ctx.fill();
+}
+
+async function poll() {
+  const url = urlInput.value.trim();
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const body = await res.json();
+    if (body && typeof body.temperature_celsius === "number") {
+      series.temp.push(body.temperature_celsius);
+      series.hum.push(body.humidity_percent);
+      if (series.temp.length > MAX_POINTS) { series.temp.shift(); series.hum.shift(); }
+      document.getElementById("temp-value").textContent = body.temperature_celsius.toFixed(1) + " °C";
+      document.getElementById("hum-value").textContent = body.humidity_percent.toFixed(1) + " %";
+      statusEl.textContent = "last update " + new Date().toLocaleTimeString();
+      statusEl.className = "ok";
+    } else {
+      statusEl.textContent = "no reading yet (sensor warming up)";
+      statusEl.className = "err";
+    }
+  } catch (e) {
+    statusEl.textContent = "fetch failed: " + e.message;
+    statusEl.className = "err";
+  }
+  drawGraph(document.getElementById("temp-graph"), series.temp, { unit: "°C", color: "#e0a458" });
+  drawGraph(document.getElementById("hum-graph"), series.hum, { unit: "%", color: "#58a6e0", minPad: 5 });
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>
